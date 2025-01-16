@@ -79,6 +79,22 @@
             }
           }
         },
+        "tenants": {
+          "type": "object",
+          "description": "resources applicable for tenant actions",
+          "properties": {
+            "collection": {
+              "type": "string",
+              "default": "*",
+              "description": "string or regex. if a specific collection name, if left empty it will be ALL or *"
+            },
+            "tenant": {
+              "type": "string",
+              "default": "*",
+              "description": "string or regex. if a specific tenant name, if left empty it will be ALL or *"
+            }
+          }
+        },
         "roles": {
           "type": "object",
           "description": "resources applicable for role actions",
@@ -98,11 +114,6 @@
               "type": "string",
               "default": "*",
               "description": "string or regex. if a specific collection name, if left empty it will be ALL or *"
-            },
-            "tenant": {
-              "type": "string",
-              "default": "*",
-              "description": "string or regex. if a specific tenant name, if left empty it will be ALL or *"
             }
           }
         },
@@ -114,7 +125,6 @@
 
             "read_cluster",
 
-            "manage_data",
             "create_data",
             "read_data",
             "update_data",
@@ -125,11 +135,15 @@
             "manage_roles",
             "read_roles",
 
-            "manage_collections",
             "create_collections",
             "read_collections",
             "update_collections",
-            "delete_collections"
+            "delete_collections",
+
+            "create_tenants",
+            "read_tenants",
+            "update_tenants",
+            "delete_tenants"
           ]
         }
       },
@@ -275,11 +289,7 @@
     },
     "Vector": {
       "description": "A vector representation of the object. If provided at object creation, this wil take precedence over any vectorizer setting.",
-      "type": "array",
-      "items": {
-        "type": "number",
-        "format": "float"
-      }
+      "type": "object"
     },
     "Vectors": {
       "description": "A map of named vectors for multi-vector representations.",

@@ -42,13 +42,8 @@ func (s *Shard) drop() (err error) {
 		s.clearDimensionMetrics()
 	}
 
-	s.hashtreeRWMux.Lock()
-	if s.hashtree != nil {
-		s.stopHashBeater()
-		s.hashtree = nil
-		s.hashtreeInitialized.Store(false)
-	}
-	s.hashtreeRWMux.Unlock()
+	s.mayStopHashBeater()
+	s.mayCleanupHashTree()
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 20*time.Second)
 	defer cancel()

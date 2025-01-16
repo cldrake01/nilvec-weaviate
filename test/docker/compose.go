@@ -42,6 +42,7 @@ import (
 	modqnaopenai "github.com/weaviate/weaviate/modules/qna-openai"
 	modrerankercohere "github.com/weaviate/weaviate/modules/reranker-cohere"
 	modrerankervoyageai "github.com/weaviate/weaviate/modules/reranker-voyageai"
+	modtext2colbertjinaai "github.com/weaviate/weaviate/modules/text2colbert-jinaai"
 	modaws "github.com/weaviate/weaviate/modules/text2vec-aws"
 	modcohere "github.com/weaviate/weaviate/modules/text2vec-cohere"
 	modgoogle "github.com/weaviate/weaviate/modules/text2vec-google"
@@ -121,6 +122,7 @@ type Compose struct {
 	withOllamaVectorizer          bool
 	withOllamaGenerative          bool
 	withAutoschema                bool
+	withMockOIDC                  bool
 	weaviateEnvs                  map[string]string
 	removeEnvs                    map[string]struct{}
 }
@@ -321,6 +323,12 @@ func (d *Compose) WithText2VecJinaAI(apiKey string) *Compose {
 	return d
 }
 
+func (d *Compose) WithText2ColBERTJinaAI(apiKey string) *Compose {
+	d.weaviateEnvs["JINAAI_APIKEY"] = apiKey
+	d.enableModules = append(d.enableModules, modtext2colbertjinaai.Name)
+	return d
+}
+
 func (d *Compose) WithGenerativeAWS(accessKey, secretKey, sessionToken string) *Compose {
 	d.weaviateEnvs["AWS_ACCESS_KEY"] = accessKey
 	d.weaviateEnvs["AWS_SECRET_KEY"] = secretKey
@@ -434,6 +442,11 @@ func (d *Compose) WithWeaviateAuth() *Compose {
 
 func (d *Compose) WithWeaviateEnv(name, value string) *Compose {
 	d.weaviateEnvs[name] = value
+	return d
+}
+
+func (d *Compose) WithMockOIDC() *Compose {
+	d.withMockOIDC = true
 	return d
 }
 
@@ -664,6 +677,16 @@ func (d *Compose) Start(ctx context.Context) (*DockerCompose, error) {
 		}
 		containers = append(containers, container)
 	}
+	if d.withMockOIDC {
+		container, err := startMockOIDC(ctx, networkName)
+		if err != nil {
+			return nil, errors.Wrapf(err, "start %s", MockOIDC)
+		}
+		for k, v := range container.envSettings {
+			envSettings[k] = v
+		}
+		containers = append(containers, container)
+	}
 
 	if d.withWeaviateCluster {
 		cs, err := d.startCluster(ctx, d.withWeaviateClusterSize, envSettings)
@@ -771,7 +794,8 @@ func (d *Compose) startCluster(ctx context.Context, size int, settings map[strin
 	}
 
 	if d.withWeaviateRbac {
-		settings["AUTHORIZATION_ENABLE_RBAC"] = "true"
+		settings["AUTHORIZATION_RBAC_ENABLED"] = "true"
+		settings["AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED"] = "false" // incompatible
 
 		if len(d.weaviateRbacAdmins) > 0 {
 			settings["AUTHORIZATION_ADMIN_USERS"] = strings.Join(d.weaviateRbacAdmins, ",")
