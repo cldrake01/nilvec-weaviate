@@ -188,6 +188,10 @@ func (index *flat) Compressed() bool {
 	return index.compression != compressionNone
 }
 
+func (index *flat) Multivector() bool {
+	return false
+}
+
 func (index *flat) getBucketName() string {
 	if index.targetVector != "" {
 		return fmt.Sprintf("%s_%s", helpers.VectorsBucketLSM, index.targetVector)
@@ -209,7 +213,7 @@ func (index *flat) initBuckets(ctx context.Context) error {
 	//       See: https://github.com/weaviate/weaviate/issues/5241
 	forceCompaction := shouldForceCompaction()
 	if err := index.store.CreateOrLoadBucket(ctx, index.getBucketName(),
-		lsmkv.WithForceCompation(forceCompaction),
+		lsmkv.WithForceCompaction(forceCompaction),
 		lsmkv.WithUseBloomFilter(false),
 		lsmkv.WithCalcCountNetAdditions(false),
 
@@ -227,7 +231,7 @@ func (index *flat) initBuckets(ctx context.Context) error {
 	}
 	if index.isBQ() {
 		if err := index.store.CreateOrLoadBucket(ctx, index.getCompressedBucketName(),
-			lsmkv.WithForceCompation(forceCompaction),
+			lsmkv.WithForceCompaction(forceCompaction),
 			lsmkv.WithUseBloomFilter(false),
 			lsmkv.WithCalcCountNetAdditions(false),
 
@@ -339,6 +343,14 @@ func (index *flat) Add(ctx context.Context, id uint64, vector []float32) error {
 	return nil
 }
 
+func (index *flat) AddMulti(ctx context.Context, docID uint64, vectors [][]float32) error {
+	return errors.Errorf("AddMulti is not supported for flat index")
+}
+
+func (index *flat) AddMultiBatch(ctx context.Context, docIDs []uint64, vectors [][][]float32) error {
+	return errors.Errorf("AddMultiBatch is not supported for flat index")
+}
+
 func (index *flat) Delete(ids ...uint64) error {
 	for i := range ids {
 		if index.isBQCached() {
@@ -358,6 +370,10 @@ func (index *flat) Delete(ids ...uint64) error {
 		}
 	}
 	return nil
+}
+
+func (index *flat) DeleteMulti(ids ...uint64) error {
+	return errors.Errorf("DeleteMulti is not supported for flat index")
 }
 
 func (index *flat) searchTimeRescore(k int) int {
@@ -380,6 +396,10 @@ func (index *flat) SearchByVector(ctx context.Context, vector []float32, k int, 
 	default:
 		return index.searchByVector(ctx, vector, k, allow)
 	}
+}
+
+func (index *flat) SearchByMultiVector(ctx context.Context, vectors [][]float32, k int, allow helpers.AllowList) ([]uint64, []float32, error) {
+	return nil, nil, errors.Errorf("SearchByMultiVector is not supported for flat index")
 }
 
 func (index *flat) searchByVector(ctx context.Context, vector []float32, k int, allow helpers.AllowList) ([]uint64, []float32, error) {
@@ -701,6 +721,12 @@ func (index *flat) SearchByVectorDistance(ctx context.Context, vector []float32,
 	return resultIDs, resultDist, nil
 }
 
+func (index *flat) SearchByMultiVectorDistance(ctx context.Context, vector [][]float32,
+	targetDistance float32, maxLimit int64, allow helpers.AllowList,
+) ([]uint64, []float32, error) {
+	return nil, nil, errors.Errorf("SearchByMultiVectorDistance is not supported for flat index")
+}
+
 func (index *flat) UpdateUserConfig(updated schemaConfig.VectorIndexConfig, callback func()) error {
 	parsed, ok := updated.(flatent.UserConfig)
 	if !ok {
@@ -757,7 +783,15 @@ func (index *flat) ListFiles(ctx context.Context, basePath string) ([]string, er
 	return files, nil
 }
 
+func (index *flat) GetKeys(id uint64) (uint64, uint64, error) {
+	return 0, 0, errors.Errorf("GetKeys is not supported for flat index")
+}
+
 func (i *flat) ValidateBeforeInsert(vector []float32) error {
+	return nil
+}
+
+func (i *flat) ValidateMultiBeforeInsert(vector [][]float32) error {
 	return nil
 }
 
@@ -1009,6 +1043,10 @@ func (index *flat) QueryVectorDistancer(queryVector []float32) common.QueryVecto
 		}
 	}
 	return common.QueryVectorDistancer{DistanceFunc: distFunc}
+}
+
+func (index *flat) QueryMultiVectorDistancer(queryVector [][]float32) common.QueryVectorDistancer {
+	return common.QueryVectorDistancer{}
 }
 
 func (index *flat) Stats() (common.IndexStats, error) {

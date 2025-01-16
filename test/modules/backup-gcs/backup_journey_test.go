@@ -14,7 +14,6 @@ package test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 	modstggcs "github.com/weaviate/weaviate/modules/backup-gcs"
@@ -62,8 +61,7 @@ func Test_BackupJourney(t *testing.T) {
 		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
+	ctx := context.Background()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -84,6 +82,7 @@ func runBackupJourney(t *testing.T, ctx context.Context, override bool, containe
 		compose, err := docker.New().
 			WithBackendGCS(gcsBackupJourneyBucketName).
 			WithText2VecContextionary().
+			WithWeaviateEnv("ENABLE_CLEANUP_UNFINISHED_BACKUPS", "true").
 			WithWeaviate().
 			Start(ctx)
 		require.Nil(t, err)
@@ -98,6 +97,7 @@ func runBackupJourney(t *testing.T, ctx context.Context, override bool, containe
 		t.Setenv(envGCSStorageEmulatorHost, compose.GetGCS().URI())
 		moduleshelper.CreateGCSBucket(ctx, t, gcsBackupJourneyProjectID, gcsBackupJourneyBucketName)
 		moduleshelper.CreateGCSBucket(ctx, t, gcsBackupJourneyProjectID, "gcsbjtestbucketoverride")
+		defer moduleshelper.DeleteGCSBucket(ctx, t, gcsBackupJourneyBucketName)
 
 		helper.SetupClient(compose.GetWeaviate().URI())
 
@@ -121,6 +121,7 @@ func runBackupJourney(t *testing.T, ctx context.Context, override bool, containe
 		compose, err := docker.New().
 			WithBackendGCS(gcsBackupJourneyBucketName).
 			WithText2VecContextionary().
+			WithWeaviateEnv("ENABLE_CLEANUP_UNFINISHED_BACKUPS", "true").
 			WithWeaviateCluster(3).
 			Start(ctx)
 		require.Nil(t, err)
@@ -135,6 +136,8 @@ func runBackupJourney(t *testing.T, ctx context.Context, override bool, containe
 		t.Setenv(envGCSStorageEmulatorHost, compose.GetGCS().URI())
 		moduleshelper.CreateGCSBucket(ctx, t, gcsBackupJourneyProjectID, gcsBackupJourneyBucketName)
 		moduleshelper.CreateGCSBucket(ctx, t, gcsBackupJourneyProjectID, "gcsbjtestbucketoverride")
+		defer moduleshelper.DeleteGCSBucket(ctx, t, gcsBackupJourneyBucketName)
+
 		helper.SetupClient(compose.GetWeaviate().URI())
 
 		t.Run("backup-gcs", func(t *testing.T) {

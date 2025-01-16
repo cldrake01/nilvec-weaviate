@@ -248,7 +248,7 @@ func (l *LazyLoadShard) ObjectSearch(ctx context.Context, limit int, filters *fi
 	return l.shard.ObjectSearch(ctx, limit, filters, keywordRanking, sort, cursor, additional, properties)
 }
 
-func (l *LazyLoadShard) ObjectVectorSearch(ctx context.Context, searchVectors [][]float32, targetVectors []string, targetDist float32, limit int, filters *filters.LocalFilter, sort []filters.Sort, groupBy *searchparams.GroupBy, additional additional.Properties, targetCombination *dto.TargetCombination, properties []string) ([]*storobj.Object, []float32, error) {
+func (l *LazyLoadShard) ObjectVectorSearch(ctx context.Context, searchVectors []models.Vector, targetVectors []string, targetDist float32, limit int, filters *filters.LocalFilter, sort []filters.Sort, groupBy *searchparams.GroupBy, additional additional.Properties, targetCombination *dto.TargetCombination, properties []string) ([]*storobj.Object, []float32, error) {
 	if err := l.Load(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -438,7 +438,7 @@ func (l *LazyLoadShard) Queues() map[string]*VectorIndexQueue {
 	return l.shard.Queues()
 }
 
-func (l *LazyLoadShard) VectorDistanceForQuery(ctx context.Context, id uint64, searchVectors [][]float32, targets []string) ([]float32, error) {
+func (l *LazyLoadShard) VectorDistanceForQuery(ctx context.Context, id uint64, searchVectors []models.Vector, targets []string) ([]float32, error) {
 	if err := l.Load(ctx); err != nil {
 		return nil, err
 	}
@@ -672,6 +672,11 @@ func (l *LazyLoadShard) updateVectorIndexIgnoreDelete(ctx context.Context, vecto
 func (l *LazyLoadShard) updateVectorIndexesIgnoreDelete(ctx context.Context, vectors map[string][]float32, status objectInsertStatus) error {
 	l.mustLoad()
 	return l.shard.updateVectorIndexesIgnoreDelete(ctx, vectors, status)
+}
+
+func (l *LazyLoadShard) updateMultiVectorIndexesIgnoreDelete(ctx context.Context, multiVectors map[string][][]float32, status objectInsertStatus) error {
+	l.mustLoad()
+	return l.shard.updateMultiVectorIndexesIgnoreDelete(ctx, multiVectors, status)
 }
 
 func (l *LazyLoadShard) hasGeoIndex() bool {

@@ -217,14 +217,14 @@ func TestGRPCReply(t *testing.T) {
 			name: "named vector only",
 			res: []interface{}{
 				map[string]interface{}{
-					"_additional": map[string]interface{}{"vectors": map[string][]float32{"custom": {1}, "first": {2}}},
+					"_additional": map[string]interface{}{"vectors": map[string]models.Vector{"custom": []float32{1}, "first": []float32{2}}},
 				},
 			},
 			searchParams: dto.GetParams{AdditionalProperties: additional.Properties{Vectors: []string{"custom", "first"}}},
 			outSearch: []*pb.SearchResult{
 				{Metadata: &pb.MetadataResult{Vectors: []*pb.Vectors{
-					{Name: "custom", VectorBytes: byteVector([]float32{1})},
-					{Name: "first", VectorBytes: byteVector([]float32{2})},
+					{Name: "custom", VectorBytes: byteVector([]float32{1}), Type: pb.VectorType_VECTOR_TYPE_FP32},
+					{Name: "first", VectorBytes: byteVector([]float32{2}), Type: pb.VectorType_VECTOR_TYPE_FP32},
 				}}, Properties: &pb.PropertiesResult{}},
 			},
 			usesWeaviateStruct: true,
