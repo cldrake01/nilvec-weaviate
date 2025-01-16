@@ -20,12 +20,14 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/adapters/repos/db/priorityqueue"
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/common"
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/compressionhelpers"
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/hnsw/distancer"
 	"github.com/weaviate/weaviate/adapters/repos/db/vector/hnsw/visited"
+	"github.com/weaviate/weaviate/entities/dto"
 	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/entities/storobj"
 	"github.com/weaviate/weaviate/usecases/floatcomp"
@@ -83,6 +85,24 @@ func (h *hnsw) SearchByVector(ctx context.Context, vector []float32,
 	return h.knnSearchByVector(ctx, vector, k, h.searchTimeEF(k), allowList)
 }
 
+func (h *hnsw) SearchByMultiVector(ctx context.Context, vectors [][]float32, k int, allowList helpers.AllowList) ([]uint64, []float32, error) {
+	if !h.multivector.Load() {
+		return nil, nil, errors.New("multivector search is not enabled")
+	}
+
+	h.compressActionLock.RLock()
+	defer h.compressActionLock.RUnlock()
+
+	vectors = h.normalizeVecs(vectors)
+	flatSearchCutoff := int(atomic.LoadInt64(&h.flatSearchCutoff))
+	if allowList != nil && !h.forbidFlat && allowList.Len() < flatSearchCutoff {
+		helpers.AnnotateSlowQueryLog(ctx, "hnsw_flat_search", true)
+		return h.flatMultiSearch(ctx, vectors, k, allowList)
+	}
+	helpers.AnnotateSlowQueryLog(ctx, "hnsw_flat_search", false)
+	return h.knnSearchByMultiVector(ctx, vectors, k, allowList)
+}
+
 // SearchByVectorDistance wraps SearchByVector, and calls it recursively until
 // the search results contain all vector within the threshold specified by the
 // target distance.
@@ -96,71 +116,25 @@ func (h *hnsw) SearchByVectorDistance(ctx context.Context, vector []float32,
 	targetDistance float32, maxLimit int64,
 	allowList helpers.AllowList,
 ) ([]uint64, []float32, error) {
-	var (
-		searchParams = newSearchByDistParams(maxLimit)
+	return searchByVectorDistance(ctx, vector, targetDistance, maxLimit, allowList,
+		h.SearchByVector, h.logger)
+}
 
-		resultIDs  []uint64
-		resultDist []float32
-	)
-
-	recursiveSearch := func() (bool, error) {
-		shouldContinue := false
-
-		ids, dist, err := h.SearchByVector(ctx, vector, searchParams.totalLimit, allowList)
-		if err != nil {
-			return false, errors.Wrap(err, "vector search")
-		}
-
-		// ensures the indexers aren't out of range
-		offsetCap := searchParams.offsetCapacity(ids)
-		totalLimitCap := searchParams.totalLimitCapacity(ids)
-
-		ids, dist = ids[offsetCap:totalLimitCap], dist[offsetCap:totalLimitCap]
-
-		if len(ids) == 0 {
-			return false, nil
-		}
-
-		lastFound := dist[len(dist)-1]
-		shouldContinue = lastFound <= targetDistance
-
-		for i := range ids {
-			if aboveThresh := dist[i] <= targetDistance; aboveThresh ||
-				floatcomp.InDelta(float64(dist[i]), float64(targetDistance), 1e-6) {
-				resultIDs = append(resultIDs, ids[i])
-				resultDist = append(resultDist, dist[i])
-			} else {
-				// as soon as we encounter a certainty which
-				// is below threshold, we can stop searching
-				break
-			}
-		}
-
-		return shouldContinue, nil
-	}
-
-	shouldContinue, err := recursiveSearch()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	for shouldContinue {
-		searchParams.iterate()
-		if searchParams.maxLimitReached() {
-			h.logger.
-				WithField("action", "unlimited_vector_search").
-				Warnf("maximum search limit of %d results has been reached",
-					searchParams.maximumSearchLimit)
-			break
-		}
-
-		shouldContinue, err = recursiveSearch()
-		if err != nil {
-			return nil, nil, err
-		}
-	}
-
-	return resultIDs, resultDist, nil
+// SearchByMultiVectorDistance wraps SearchByMultiVector, and calls it recursively until
+// the search results contain all vector within the threshold specified by the
+// target distance.
+//
+// The maxLimit param will place an upper bound on the number of search results
+// returned. This is used in situations where the results of the method are all
+// eventually turned into objects, for example, a Get query. If the caller just
+// needs ids for sake of something like aggregation, a maxLimit of -1 can be
+// passed in to truly obtain all results from the vector index.
+func (h *hnsw) SearchByMultiVectorDistance(ctx context.Context, vector [][]float32,
+	targetDistance float32, maxLimit int64,
+	allowList helpers.AllowList,
+) ([]uint64, []float32, error) {
+	return searchByVectorDistance(ctx, vector, targetDistance, maxLimit, allowList,
+		h.SearchByMultiVector, h.logger)
 }
 
 func (h *hnsw) shouldRescore() bool {
@@ -548,7 +522,20 @@ func (h *hnsw) currentWorstResultDistanceToByte(results *priorityqueue.Queue[any
 func (h *hnsw) distanceFromBytesToFloatNode(concreteDistancer compressionhelpers.CompressorDistancer, nodeID uint64) (float32, error) {
 	slice := h.pools.tempVectors.Get(int(h.dims))
 	defer h.pools.tempVectors.Put(slice)
-	vec, err := h.TempVectorForIDThunk(context.Background(), nodeID, slice)
+	var vec []float32
+	var err error
+	if !h.multivector.Load() {
+		vec, err = h.TempVectorForIDThunk(context.Background(), nodeID, slice)
+	} else {
+		docID, relativeID := h.cache.GetKeys(nodeID)
+		vecs, err := h.TempMultiVectorForIDThunk(context.Background(), docID, slice)
+		if err != nil {
+			return 0, err
+		} else if len(vecs) <= int(relativeID) {
+			return 0, errors.Errorf("relativeID %d is out of bounds for docID %d", relativeID, docID)
+		}
+		vec = vecs[relativeID]
+	}
 	if err != nil {
 		var e storobj.ErrNotFound
 		if errors.As(err, &e) {
@@ -795,7 +782,7 @@ func (h *hnsw) knnSearchByVector(ctx context.Context, searchVec []float32, k int
 	}
 
 	beforeRescore := time.Now()
-	if h.shouldRescore() {
+	if h.shouldRescore() && !h.multivector.Load() {
 		if err := h.rescore(ctx, res, k, compressorDistancer); err != nil {
 			helpers.AnnotateSlowQueryLog(ctx, "context_error", "knn_search_rescore")
 			took := time.Since(beforeRescore)
@@ -806,10 +793,11 @@ func (h *hnsw) knnSearchByVector(ctx context.Context, searchVec []float32, k int
 		helpers.AnnotateSlowQueryLog(ctx, "knn_search_rescore_took", took)
 	}
 
-	for res.Len() > k {
-		res.Pop()
+	if !h.multivector.Load() {
+		for res.Len() > k {
+			res.Pop()
+		}
 	}
-
 	ids := make([]uint64, res.Len())
 	dists := make([]float32, res.Len())
 
@@ -824,6 +812,95 @@ func (h *hnsw) knnSearchByVector(ctx context.Context, searchVec []float32, k int
 	}
 	h.pools.pqResults.Put(res)
 	return ids, dists, nil
+}
+
+func (h *hnsw) knnSearchByMultiVector(ctx context.Context, queryVectors [][]float32, k int, allowList helpers.AllowList) ([]uint64, []float32, error) {
+	kPrime := k
+	candidateSet := make(map[uint64]struct{})
+	for _, vec := range queryVectors {
+		ids, _, err := h.knnSearchByVector(ctx, vec, kPrime, h.searchTimeEF(kPrime), allowList)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, id := range ids {
+			var docId uint64
+			if !h.compressed.Load() {
+				docId, _ = h.cache.GetKeys(id)
+			} else {
+				docId, _ = h.compressor.GetKeys(id)
+			}
+			candidateSet[docId] = struct{}{}
+		}
+	}
+	return h.computeLateInteraction(queryVectors, k, candidateSet)
+}
+
+func (h *hnsw) computeLateInteraction(queryVectors [][]float32, k int, candidateSet map[uint64]struct{}) ([]uint64, []float32, error) {
+	resultsQueue := priorityqueue.NewMin[any](1)
+	for docID := range candidateSet {
+		sim, err := h.computeScore(queryVectors, docID)
+		if err != nil {
+			return nil, nil, err
+		}
+		resultsQueue.Insert(docID, sim)
+		if resultsQueue.Len() > k {
+			resultsQueue.Pop()
+		}
+	}
+
+	distances := make([]float32, resultsQueue.Len())
+	ids := make([]uint64, resultsQueue.Len())
+
+	i := len(ids) - 1
+	for resultsQueue.Len() > 0 {
+		element := resultsQueue.Pop()
+		ids[i] = element.ID
+		distances[i] = element.Dist
+		i--
+	}
+
+	return ids, distances, nil
+}
+
+func (h *hnsw) computeScore(searchVecs [][]float32, docID uint64) (float32, error) {
+	h.RLock()
+	vecIDs := h.docIDVectors[docID]
+	h.RUnlock()
+	var docVecs [][]float32
+	if h.compressed.Load() {
+		slice := h.pools.tempVectors.Get(int(h.dims))
+		var err error
+		docVecs, err = h.TempMultiVectorForIDThunk(context.Background(), docID, slice)
+		if err != nil {
+			return 0.0, errors.Wrap(err, "get vector for docID")
+		}
+		h.pools.tempVectors.Put(slice)
+	} else {
+		var errs []error
+		docVecs, errs = h.multiVectorForID(context.TODO(), vecIDs)
+		for _, err := range errs {
+			if err != nil {
+				return 0.0, errors.Wrap(err, "get vector for docID")
+			}
+		}
+	}
+
+	similarity := float32(0.0)
+
+	for _, searchVec := range searchVecs {
+		maxSim := float32(-math.MaxFloat32)
+
+		for _, docVec := range docVecs {
+			dist := h.distancerProvider.Step(searchVec, docVec)
+			if dist > maxSim {
+				maxSim = dist
+			}
+		}
+
+		similarity += maxSim
+	}
+
+	return similarity, nil
 }
 
 func (h *hnsw) QueryVectorDistancer(queryVector []float32) common.QueryVectorDistancer {
@@ -849,6 +926,20 @@ func (h *hnsw) QueryVectorDistancer(queryVector []float32) common.QueryVectorDis
 		}
 		return common.QueryVectorDistancer{DistanceFunc: f}
 	}
+}
+
+func (h *hnsw) QueryMultiVectorDistancer(queryVector [][]float32) common.QueryVectorDistancer {
+	queryVector = h.normalizeVecs(queryVector)
+	f := func(docID uint64) (float32, error) {
+		h.RLock()
+		_, ok := h.docIDVectors[docID]
+		h.RUnlock()
+		if !ok {
+			return -1, fmt.Errorf("docID %v is not in the vector index", docID)
+		}
+		return h.computeScore(queryVector, docID)
+	}
+	return common.QueryVectorDistancer{DistanceFunc: f}
 }
 
 func (h *hnsw) rescore(ctx context.Context, res *priorityqueue.Queue[any], k int, compressorDistancer compressionhelpers.CompressorDistancer) error {
@@ -976,4 +1067,77 @@ func (params *searchByDistParams) maxLimitReached() bool {
 	}
 
 	return int64(params.totalLimit) > params.maximumSearchLimit
+}
+
+func searchByVectorDistance[T dto.Embedding](ctx context.Context, vector T,
+	targetDistance float32, maxLimit int64,
+	allowList helpers.AllowList,
+	searchByVector func(context.Context, T, int, helpers.AllowList) ([]uint64, []float32, error),
+	logger logrus.FieldLogger,
+) ([]uint64, []float32, error) {
+	var (
+		searchParams = newSearchByDistParams(maxLimit)
+
+		resultIDs  []uint64
+		resultDist []float32
+	)
+
+	recursiveSearch := func() (bool, error) {
+		shouldContinue := false
+
+		ids, dist, err := searchByVector(ctx, vector, searchParams.totalLimit, allowList)
+		if err != nil {
+			return false, errors.Wrap(err, "vector search")
+		}
+
+		// ensures the indexers aren't out of range
+		offsetCap := searchParams.offsetCapacity(ids)
+		totalLimitCap := searchParams.totalLimitCapacity(ids)
+
+		ids, dist = ids[offsetCap:totalLimitCap], dist[offsetCap:totalLimitCap]
+
+		if len(ids) == 0 {
+			return false, nil
+		}
+
+		lastFound := dist[len(dist)-1]
+		shouldContinue = lastFound <= targetDistance
+
+		for i := range ids {
+			if aboveThresh := dist[i] <= targetDistance; aboveThresh ||
+				floatcomp.InDelta(float64(dist[i]), float64(targetDistance), 1e-6) {
+				resultIDs = append(resultIDs, ids[i])
+				resultDist = append(resultDist, dist[i])
+			} else {
+				// as soon as we encounter a certainty which
+				// is below threshold, we can stop searching
+				break
+			}
+		}
+
+		return shouldContinue, nil
+	}
+
+	shouldContinue, err := recursiveSearch()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for shouldContinue {
+		searchParams.iterate()
+		if searchParams.maxLimitReached() {
+			logger.
+				WithField("action", "unlimited_vector_search").
+				Warnf("maximum search limit of %d results has been reached",
+					searchParams.maximumSearchLimit)
+			break
+		}
+
+		shouldContinue, err = recursiveSearch()
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return resultIDs, resultDist, nil
 }

@@ -58,10 +58,11 @@ func TestStorageObjectMarshalling(t *testing.T) {
 			},
 		},
 		[]float32{1, 2, 0.7},
-		models.Vectors{
+		map[string][]float32{
 			"vector1": {1, 2, 3},
 			"vector2": {4, 5, 6},
 		},
+		nil,
 	)
 	before.DocID = 7
 
@@ -99,7 +100,7 @@ func TestStorageObjectMarshalling(t *testing.T) {
 }
 
 func TestStorageObjectMarshallingMultiVector(t *testing.T) {
-	before := FromObjectMulti(
+	before := FromObject(
 		&models.Object{
 			Class:              "MyFavoriteClass",
 			CreationTimeUnix:   123456,
@@ -125,7 +126,7 @@ func TestStorageObjectMarshallingMultiVector(t *testing.T) {
 			},
 		},
 		[]float32{1, 2, 0.7},
-		models.Vectors{
+		map[string][]float32{
 			"vector1": {1, 2, 3},
 			"vector2": {4, 5, 6},
 		},
@@ -172,7 +173,7 @@ func TestStorageObjectMarshallingMultiVector(t *testing.T) {
 
 func TestStorageObjectUnMarshallingMultiVector(t *testing.T) {
 	t.Run("all vectors stored", func(t *testing.T) {
-		before := FromObjectMulti(
+		before := FromObject(
 			&models.Object{
 				Class:              "MyFavoriteClass",
 				CreationTimeUnix:   123456,
@@ -198,7 +199,7 @@ func TestStorageObjectUnMarshallingMultiVector(t *testing.T) {
 				},
 			},
 			[]float32{1, 2, 0.7},
-			models.Vectors{
+			map[string][]float32{
 				"vector1": {1, 2, 3},
 				"vector2": {4, 5, 6},
 			},
@@ -238,10 +239,42 @@ func TestStorageObjectUnMarshallingMultiVector(t *testing.T) {
 			assert.ElementsMatch(t, after.MultiVectors["vector4"], before.MultiVectors["vector4"])
 			assert.ElementsMatch(t, after.MultiVectors["vector5"], before.MultiVectors["vector5"])
 		})
+
+		t.Run("check multi vectors optional", func(t *testing.T) {
+			t.Run("FromBinaryOptional: empty additional", func(t *testing.T) {
+				afterMultiVectorsOptional, err := FromBinaryOptional(asBinary, additional.Properties{}, nil)
+				require.Nil(t, err)
+				require.Nil(t, afterMultiVectorsOptional.MultiVectors)
+			})
+
+			t.Run("FromBinaryOptional: multi vector in additional", func(t *testing.T) {
+				afterMultiVectorsOptional, err := FromBinaryOptional(asBinary, additional.Properties{
+					Vectors: []string{"vector4"},
+				}, nil)
+				require.Nil(t, err)
+				require.NotEmpty(t, afterMultiVectorsOptional.MultiVectors)
+				require.Len(t, afterMultiVectorsOptional.MultiVectors, 1)
+				require.Equal(t, before.MultiVectors["vector4"], afterMultiVectorsOptional.MultiVectors["vector4"])
+			})
+
+			t.Run("FromBinaryOptional: named vector and multi vector in additional", func(t *testing.T) {
+				afterMultiVectorsOptional, err := FromBinaryOptional(asBinary, additional.Properties{
+					Vectors: []string{"vector2", "vector4"},
+				}, nil)
+				require.Nil(t, err)
+				require.NotEmpty(t, afterMultiVectorsOptional.Vectors)
+				require.NotEmpty(t, afterMultiVectorsOptional.MultiVectors)
+				require.Len(t, afterMultiVectorsOptional.Vectors, 2)
+				require.Len(t, afterMultiVectorsOptional.MultiVectors, 1)
+				require.Equal(t, before.Vectors["vector1"], afterMultiVectorsOptional.Vectors["vector1"])
+				require.Equal(t, before.Vectors["vector2"], afterMultiVectorsOptional.Vectors["vector2"])
+				require.Equal(t, before.MultiVectors["vector4"], afterMultiVectorsOptional.MultiVectors["vector4"])
+			})
+		})
 	})
 
 	t.Run("only vectors and multivectors", func(t *testing.T) {
-		before := FromObjectMulti(
+		before := FromObject(
 			&models.Object{
 				Class:              "MyFavoriteClass",
 				CreationTimeUnix:   123456,
@@ -267,7 +300,7 @@ func TestStorageObjectUnMarshallingMultiVector(t *testing.T) {
 				},
 			},
 			nil,
-			models.Vectors{
+			map[string][]float32{
 				"vector1": {1, 2, 3},
 				"vector2": {4, 5, 6},
 			},
@@ -305,7 +338,7 @@ func TestStorageObjectUnMarshallingMultiVector(t *testing.T) {
 	})
 
 	t.Run("only multi vectors", func(t *testing.T) {
-		before := FromObjectMulti(
+		before := FromObject(
 			&models.Object{
 				Class:              "MyFavoriteClass",
 				CreationTimeUnix:   123456,
@@ -376,6 +409,7 @@ func TestFilteringNilProperty(t *testing.T) {
 		},
 		[]float32{1, 2, 0.7},
 		nil,
+		nil,
 	)
 	props := object.Properties()
 	propsTyped, ok := props.(map[string]interface{})
@@ -414,11 +448,12 @@ func TestStorageObjectUnmarshallingSpecificProps(t *testing.T) {
 			},
 		},
 		[]float32{1, 2, 0.7},
-		models.Vectors{
+		map[string][]float32{
 			"vector1": {1, 2, 3},
 			"vector2": {4, 5, 6},
 			"vector3": {7, 8, 9},
 		},
+		nil,
 	)
 	before.DocID = 7
 
@@ -494,7 +529,7 @@ func TestNewStorageObject(t *testing.T) {
 					Properties: map[string]interface{}{
 						"foo": "bar",
 					},
-				}, nil, nil)
+				}, nil, nil, nil)
 				alt.DocID = 13
 
 				assert.Equal(t, so, alt)
@@ -548,7 +583,7 @@ func TestNewStorageObject(t *testing.T) {
 					Properties: map[string]interface{}{
 						"foo": "bar",
 					},
-				}, nil, nil)
+				}, nil, nil, nil)
 				alt.DocID = 13
 
 				assert.Equal(t, so, alt)
@@ -584,11 +619,12 @@ func TestStorageArrayObjectMarshalling(t *testing.T) {
 			},
 		},
 		[]float32{1, 2, 0.7},
-		models.Vectors{
+		map[string][]float32{
 			"vector1": {1, 2, 3},
 			"vector2": {4, 5, 6},
 			"vector3": {7, 8, 9},
 		},
+		nil,
 	)
 	before.DocID = 7
 
@@ -671,6 +707,7 @@ func TestExtractionOfSingleProperties(t *testing.T) {
 		},
 		[]float32{1, 2, 0.7},
 		nil,
+		nil,
 	)
 
 	before.DocID = 7
@@ -692,7 +729,6 @@ func TestExtractionOfSingleProperties(t *testing.T) {
 		for key := range expected {
 			require.Equal(t, expected[key], extractedProperties[key])
 		}
-
 	}
 }
 
@@ -745,11 +781,12 @@ func TestStorageObjectMarshallingWithGroup(t *testing.T) {
 			},
 		},
 		[]float32{1, 2, 0.7},
-		models.Vectors{
+		map[string][]float32{
 			"vector1": {1, 2, 3},
 			"vector2": {4, 5, 6},
 			"vector3": {7, 8, 9},
 		},
+		nil,
 	)
 	before.DocID = 7
 
@@ -834,6 +871,7 @@ func TestStorageMaxVectorDimensionsObjectMarshalling(t *testing.T) {
 					},
 					vector,
 					nil,
+					nil,
 				)
 				before.DocID = 7
 
@@ -869,6 +907,7 @@ func TestStorageMaxVectorDimensionsObjectMarshalling(t *testing.T) {
 					},
 					vector,
 					nil,
+					nil,
 				)
 				before.DocID = 7
 
@@ -898,6 +937,7 @@ func TestStorageMaxVectorDimensionsObjectMarshalling(t *testing.T) {
 					before.Object.Additional = nil
 					before.Vector = vector
 					before.VectorLen = int(vectorLength)
+
 					assert.Equal(t, before, after)
 
 					assert.Equal(t, before.DocID, after.DocID)
@@ -989,11 +1029,12 @@ func TestVectorFromBinary(t *testing.T) {
 			},
 		},
 		[]float32{1, 2, 0.7},
-		models.Vectors{
+		map[string][]float32{
 			"vector1": vector1,
 			"vector2": vector2,
 			"vector3": vector3,
 		},
+		nil,
 	)
 	before.DocID = 7
 
@@ -1018,7 +1059,7 @@ func TestMultiVectorFromBinary(t *testing.T) {
 	vector2 := [][]float32{{4, 5, 6}, {7, 8, 9}}
 	vector3 := [][]float32{{7, 8, 9}, {10, 11, 12}, {13, 14, 15}}
 	vector4 := []float32{1, 2, 3}
-	before := FromObjectMulti(
+	before := FromObject(
 		&models.Object{
 			Class:              "MyFavoriteClass",
 			CreationTimeUnix:   123456,
@@ -1066,7 +1107,7 @@ func TestMultiVectorFromBinary(t *testing.T) {
 			},
 		},
 		[]float32{1, 2, 0.7},
-		models.Vectors{
+		map[string][]float32{
 			"vector4": vector4,
 		},
 		map[string][][]float32{
@@ -1111,6 +1152,7 @@ func TestStorageInvalidObjectMarshalling(t *testing.T) {
 			},
 			nil,
 			nil,
+			nil,
 		)
 
 		_, err := invalidObj.MarshalBinary()
@@ -1127,6 +1169,7 @@ func TestStorageInvalidObjectMarshalling(t *testing.T) {
 			},
 			make([]float32, maxVectorLength+1),
 			nil,
+			nil,
 		)
 
 		_, err := invalidObj.MarshalBinary()
@@ -1142,9 +1185,10 @@ func TestStorageInvalidObjectMarshalling(t *testing.T) {
 				ID:                 strfmt.UUID("73f2eb5f-5abf-447a-81ca-74b1dd168247"),
 			},
 			nil,
-			models.Vectors{
-				"vector1": make(models.Vector, maxVectorLength+1),
+			map[string][]float32{
+				"vector1": make([]float32, maxVectorLength+1),
 			},
+			nil,
 		)
 
 		_, err := invalidObj.MarshalBinary()
@@ -1191,7 +1235,7 @@ func TestMemoryReuse(t *testing.T) {
 			ID:         strfmt.UUID(fmt.Sprintf("73f4eb5f-5abf-447a-81ca-74b1dd16824%v", i)),
 			Properties: prop,
 		}
-		before := FromObject(&obj, nil, nil)
+		before := FromObject(&obj, nil, nil, nil)
 		asBinary, err := before.MarshalBinary()
 		require.Nil(t, err)
 		if len(asBinary) > largestSize {
@@ -1216,7 +1260,7 @@ func TestMemoryReuse(t *testing.T) {
 			propStringsList = append(propStringsList, []string{j})
 		}
 
-		before := FromObject(&obj, nil, nil)
+		before := FromObject(&obj, nil, nil, nil)
 		asBinary, err := before.MarshalBinary()
 		require.Nil(t, err)
 		reuseableBuff = reuseableBuff[:len(asBinary)]
@@ -1259,6 +1303,7 @@ func benchmarkExtraction(b *testing.B, propStrings []string) {
 			ID:               "73f2eb5f-5abf-447a-81ca-74b1dd168247",
 			Properties:       beforeProps,
 		},
+		nil,
 		nil,
 		nil,
 	)

@@ -46,7 +46,19 @@ const composerUpgradedKey = "upgraded"
 
 var dynamicBucket = []byte("dynamic")
 
+type MultiVectorIndex interface {
+	AddMulti(ctx context.Context, docId uint64, vector [][]float32) error
+	AddMultiBatch(ctx context.Context, docIds []uint64, vectors [][][]float32) error
+	DeleteMulti(id ...uint64) error
+	SearchByMultiVector(ctx context.Context, vector [][]float32, k int, allow helpers.AllowList) ([]uint64, []float32, error)
+	SearchByMultiVectorDistance(ctx context.Context, vector [][]float32, targetDistance float32,
+		maxLimit int64, allowList helpers.AllowList) ([]uint64, []float32, error)
+	GetKeys(id uint64) (uint64, uint64, error)
+	ValidateMultiBeforeInsert(vector [][]float32) error
+}
+
 type VectorIndex interface {
+	MultiVectorIndex
 	Dump(labels ...string)
 	Add(ctx context.Context, id uint64, vector []float32) error
 	AddBatch(ctx context.Context, id []uint64, vector [][]float32) error
@@ -62,12 +74,14 @@ type VectorIndex interface {
 	ListFiles(ctx context.Context, basePath string) ([]string, error)
 	PostStartup()
 	Compressed() bool
+	Multivector() bool
 	ValidateBeforeInsert(vector []float32) error
 	DistanceBetweenVectors(x, y []float32) (float32, error)
 	ContainsNode(id uint64) bool
 	DistancerProvider() distancer.Provider
 	AlreadyIndexed() uint64
 	QueryVectorDistancer(queryVector []float32) common.QueryVectorDistancer
+	QueryMultiVectorDistancer(queryVector [][]float32) common.QueryVectorDistancer
 	// Iterate over all nodes in the index.
 	// Consistency is not guaranteed, as the
 	// index may be concurrently modified.
@@ -93,7 +107,7 @@ type dynamic struct {
 	className             string
 	prometheusMetrics     *monitoring.PrometheusMetrics
 	vectorForIDThunk      common.VectorForID[float32]
-	tempVectorForIDThunk  common.TempVectorForID
+	tempVectorForIDThunk  common.TempVectorForID[float32]
 	distanceProvider      distancer.Provider
 	makeCommitLoggerThunk hnsw.MakeCommitLogger
 	threshold             uint64
@@ -215,10 +229,22 @@ func (dynamic *dynamic) Compressed() bool {
 	return dynamic.index.Compressed()
 }
 
+func (dynamic *dynamic) Multivector() bool {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.Multivector()
+}
+
 func (dynamic *dynamic) AddBatch(ctx context.Context, ids []uint64, vectors [][]float32) error {
 	dynamic.RLock()
 	defer dynamic.RUnlock()
 	return dynamic.index.AddBatch(ctx, ids, vectors)
+}
+
+func (dynamic *dynamic) AddMultiBatch(ctx context.Context, ids []uint64, vectors [][][]float32) error {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.AddMultiBatch(ctx, ids, vectors)
 }
 
 func (dynamic *dynamic) Add(ctx context.Context, id uint64, vector []float32) error {
@@ -227,10 +253,22 @@ func (dynamic *dynamic) Add(ctx context.Context, id uint64, vector []float32) er
 	return dynamic.index.Add(ctx, id, vector)
 }
 
+func (dynamic *dynamic) AddMulti(ctx context.Context, docId uint64, vectors [][]float32) error {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.AddMulti(ctx, docId, vectors)
+}
+
 func (dynamic *dynamic) Delete(ids ...uint64) error {
 	dynamic.RLock()
 	defer dynamic.RUnlock()
 	return dynamic.index.Delete(ids...)
+}
+
+func (dynamic *dynamic) DeleteMulti(ids ...uint64) error {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.DeleteMulti(ids...)
 }
 
 func (dynamic *dynamic) SearchByVector(ctx context.Context, vector []float32, k int, allow helpers.AllowList) ([]uint64, []float32, error) {
@@ -239,10 +277,22 @@ func (dynamic *dynamic) SearchByVector(ctx context.Context, vector []float32, k 
 	return dynamic.index.SearchByVector(ctx, vector, k, allow)
 }
 
+func (dynamic *dynamic) SearchByMultiVector(ctx context.Context, vectors [][]float32, k int, allow helpers.AllowList) ([]uint64, []float32, error) {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.SearchByMultiVector(ctx, vectors, k, allow)
+}
+
 func (dynamic *dynamic) SearchByVectorDistance(ctx context.Context, vector []float32, targetDistance float32, maxLimit int64, allow helpers.AllowList) ([]uint64, []float32, error) {
 	dynamic.RLock()
 	defer dynamic.RUnlock()
 	return dynamic.index.SearchByVectorDistance(ctx, vector, targetDistance, maxLimit, allow)
+}
+
+func (dynamic *dynamic) SearchByMultiVectorDistance(ctx context.Context, vector [][]float32, targetDistance float32, maxLimit int64, allow helpers.AllowList) ([]uint64, []float32, error) {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.SearchByMultiVectorDistance(ctx, vector, targetDistance, maxLimit, allow)
 }
 
 func (dynamic *dynamic) UpdateUserConfig(updated schemaconfig.VectorIndexConfig, callback func()) error {
@@ -262,6 +312,12 @@ func (dynamic *dynamic) UpdateUserConfig(updated schemaconfig.VectorIndexConfig,
 		dynamic.index.UpdateUserConfig(parsed.FlatUC, callback)
 	}
 	return nil
+}
+
+func (dynamic *dynamic) GetKeys(id uint64) (uint64, uint64, error) {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.GetKeys(id)
 }
 
 func (dynamic *dynamic) Drop(ctx context.Context) error {
@@ -305,6 +361,12 @@ func (dynamic *dynamic) ValidateBeforeInsert(vector []float32) error {
 	dynamic.RLock()
 	defer dynamic.RUnlock()
 	return dynamic.index.ValidateBeforeInsert(vector)
+}
+
+func (dynamic *dynamic) ValidateMultiBeforeInsert(vector [][]float32) error {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.ValidateMultiBeforeInsert(vector)
 }
 
 func (dynamic *dynamic) PostStartup() {
@@ -351,6 +413,12 @@ func (dynamic *dynamic) QueryVectorDistancer(queryVector []float32) common.Query
 	dynamic.RLock()
 	defer dynamic.RUnlock()
 	return dynamic.index.QueryVectorDistancer(queryVector)
+}
+
+func (dynamic *dynamic) QueryMultiVectorDistancer(queryVector [][]float32) common.QueryVectorDistancer {
+	dynamic.RLock()
+	defer dynamic.RUnlock()
+	return dynamic.index.QueryMultiVectorDistancer(queryVector)
 }
 
 func (dynamic *dynamic) ShouldUpgrade() (bool, int) {
